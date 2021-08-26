@@ -1,0 +1,188 @@
+---
+title: 'ECON 490 Project: Predicting Hotel Cancelations'
+subtitle: Adam Wisowaty (adamtw2)
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+#Introduction
+
+For this project I investigated if we can predict hotel cancelations based on other factors. One reason why I think this is important is that it shows the general sentiment regarding travel around the country. If a lot people are canceling their hotel reservations, then this means people aren't traveling and the economy might not be doing very well. I also think it would be important for hotel management to be able to predict which reservations have a high probability of being canceled as this would allow them to adjust staff hours and project revenue. 
+
+
+
+
+#Data Wrangling and Cleaning
+
+The data set I used was the Hotel Booking Demand Dataset from Kaggle (https://www.kaggle.com/jessemostipak/hotel-booking-demand). The first thing I had to do when creating the final data set was remove NA values using na.omit(). Next I created dummy variables for some of the data. For example, the children variable had values ranging from 0 to 10, but I just wanted an indicator that would show if any kids were part of the reservation. After creating the final data set, I set the seed to 490 and created the train/test split.
+
+```{r Data Wrangling and Cleaning, message=FALSE}
+library(tidyverse)
+library(glmnet)
+library(dplyr)
+library(caret)
+library(e1071)
+library(keras)
+library(plotROC)
+library(class)
+library(MASS) 
+
+project_data = read_csv("hotel_bookings.csv")
+project_data = na.omit(project_data)
+
+project_data$dummy_children = if_else(project_data$children>0 | project_data$babies>0, 1, 0)
+project_data$dummy_requests = if_else(project_data$total_of_special_requests>0, 1, 0)
+project_data$dummy_previous_cancellations = if_else(project_data$previous_cancellations>0,1,0)
+project_data$dummy_parking = if_else(project_data$required_car_parking_spaces>0,1,0)
+project_data$is_canceled_factor = as.factor(if_else(project_data$is_canceled == 1, "Canceled", "Not Canceled"))
+
+set.seed(490)
+train = sample_frac(project_data, .8)
+test = anti_join(project_data, train)
+```
+
+
+
+
+#EDA
+
+This barplot shows the distribution of the canceled and not canceled hotel reservations. Clearly there are significantly more reservations that are not canceled. 
+```{r barplot}
+barplot(table(project_data$is_canceled_factor))
+```
+
+This barplot shows the number of children in each booking. Not many bookings had kids, but the dummy variable for children was one of the most significant variables chosen by the lasso. Bookings with kids were less likely to be canceled. 
+```{r}
+barplot(table(project_data$children))
+```
+
+
+This violin plot shows that bookings that weren't canceled were likely to have shorter lead time.
+```{r}
+ggplot(project_data, aes(x=is_canceled_factor, y=lead_time)) + 
+  geom_violin(trim=FALSE)
+```
+
+This violin plot shows that the reservations without special request were more likely to be canceled. 
+```{r}
+ggplot(project_data, aes(x=is_canceled_factor, y=total_of_special_requests)) + 
+  geom_violin(trim=FALSE)
+```
+
+#Inference
+
+The top 3 significant coefficients for this model are the dummy variables for children, requests and previous cancellations. The coefficients for the children and previous cancelations are negative, meaning that these people are less likely to cancel their reservations. The coefficient for requests is positive which suggests that these people who make special requests are more likely to cancel their reservation. 
+
+$\textbf{Cross Validation and Best Lambda}$
+```{r cross validation}
+trControl = trainControl(method = 'repeatedcv',
+                         repeats = 5,
+                         number = 5)
+
+x = model.matrix(is_canceled_factor ~ hotel + dummy_children + lead_time + dummy_requests + as.factor(arrival_date_year) + is_repeated_guest + dummy_previous_cancellations + dummy_parking, data = train)
+y = train$is_canceled_factor
+
+fitl = train(x,
+             y,
+             method = 'glmnet',
+             family = "binomial",
+             trControl = trControl,
+             tuneGrid = expand.grid(alpha = 1, lambda = 10^seq(-5,2,length = 50)))
+fitl$bestTune
+```
+
+$\textbf{Final Model}$
+```{r final model}
+a = fitl$bestTune$alpha
+l = fitl$bestTune$lambda
+best_model = glmnet(x, y, alpha = a, lambda = l, family = "binomial")
+
+final_model = glm(is_canceled_factor ~ I(hotel == 'Resort Hotel') + dummy_children + lead_time + dummy_requests + I(as.factor(arrival_date_year) == '2016') + I(as.factor(arrival_date_year) == '2017') + is_repeated_guest + dummy_previous_cancellations + dummy_parking, family = "binomial", data = train)
+
+summary(final_model)
+```
+
+
+#Prediction
+
+$\textbf{Inference Model Accuracy}$
+```{r inference model accuracy}
+final_predicted_probabilities <- predict(final_model, newdata = test, type = "response")
+final_predicted_classes <- ifelse(final_predicted_probabilities > 0.5, "Canceled", "Not Canceled")
+
+mean(final_predicted_classes == test$is_canceled_factor)
+```
+
+$\textbf{Neural Network Training}$
+```{r chosen model 1 training}
+f = is_canceled_factor ~ hotel + as.factor(arrival_date_year) + dummy_children + lead_time + dummy_requests + is_repeated_guest + dummy_previous_cancellations + dummy_parking - 1
+
+x_train = model.matrix(f, train) %>% scale
+x_test  = model.matrix(f, test) %>% scale
+
+# Recall if you are predicting a categorical variable, it needs to be zero indexed
+# and you need to initialize it with the keras function to_categorical()
+y_train = to_categorical(y = train$is_canceled - 1, num_classes = 2)
+y_test  = to_categorical(y = test$is_canceled - 1, num_classes = 2)
+
+
+n = ncol(x_train)
+neural_model = keras_model_sequential()
+neural_model %>%
+  layer_dense(units = 70, activation = 'relu', input_shape = n) %>%
+  layer_dense(units = 35, activation = 'relu') %>%
+  layer_dense(units = 2, activation = 'softmax')
+
+neural_model %>% compile(
+  loss = "categorical_crossentropy",
+  optimizer = optimizer_rmsprop(),
+  metrics = c("accuracy")
+)
+
+history1 <- neural_model %>% fit(
+  x_train, y_train,
+  epochs = 30, batch_size = 50,
+  validation_split = .2
+)
+```
+
+$\textbf{Neural Network Test Accuracy}$
+```{r chosen model 1 test accuracy}
+plot(history1)
+
+neural_model %>% evaluate(x_test, y_test)
+```
+
+$\textbf{KNN Training/Accuracy}$
+```{r chosen model 2 training}
+x_train = model.matrix(is_canceled_factor ~ hotel + dummy_children + lead_time + dummy_requests + as.factor(arrival_date_year) + is_repeated_guest + dummy_previous_cancellations + dummy_parking, data = train)
+x_test  = model.matrix(is_canceled_factor ~ hotel + dummy_children + lead_time + dummy_requests + as.factor(arrival_date_year) + is_repeated_guest + dummy_previous_cancellations + dummy_parking, data = test)
+y_train = train$is_canceled_factor
+
+K = c(2:6, 10, 15, 20, 30, 50)
+for(k in K){
+  kfit = knn(x_train, x_test, y_train, k)
+  accuracy = mean(kfit == test$is_canceled_factor)
+  cat('k =', k, '   Accuracy =', accuracy, '\n')
+}
+```
+
+
+
+#Comparison
+
+In terms of interpretability, it would be easy enough to calculate the marginal effect of each variable on the probability of the logistic regression, and KNN just looks at the surrounding observations to make a prediction, but the neural network has a bit more going on behind the scenes, so I think it might be hard for someone who doesn't know how it works to understand it. In terms of flexibility, I think the logistic regression and neural network are superior to KNN because KNN isn't particularly complex (though it still managed to get pretty good accuracy). None of these models performed to the level I would have hoped. The best model was the neural network which managed to correctly classify 73.45% of cancelations, it was closely followed by the KNN with k=4 which managed to correctly classify 73.06% of cancelations. The logistic regression model had a horrific accuracy of just 26%. I think it is difficult to say that hotel cancelations could be predicted with any certainty given the variables I used.
+
+
+#Conclusion
+
+To summarize, I investigated whether hotel cancelations can be correctly classified based on other factors by using logistic regression, KNN and neural network models. To examine this question I used the Hotel Booking Demand Dataset from Kaggle. The best performing model turned out to be the neural network with two hidden layers(70 and 35 neurons) that used ReLU and an output layer that used softmax. The three most important predictors turned out to be the dummy variables for children, special requests and previous cancellations. I think this was a really interesting problem to look at, even though I wasn't able to achieve the accuracy that I wanted from my models. Once the data is available for 2020, I think it would be fascinating to go back and see if COVID-19 had a major impact on hotel cancelations.
+
+
