@@ -1,0 +1,159 @@
+---
+title: "Urbana Rental Inspections Shiny App"
+subtitle: "APP RENDERS AT BOTTOM OF PAGE AND MAY REQUIRE SCROLLING TO SEE ALL ELEMENTS"
+output: html_document
+runtime: shiny
+---
+
+
+
+With this application I tried to create an easy way to visualize and sort through the rental inspection data for Urbana, IL. Filters can be adjusted to fit whichever criteria the user is looking for. The data table and map will update based on criteria selected.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+```{r test of plotly}
+library(shiny)
+library(dplyr)
+library(tidyverse)
+library(data.table)
+library(plotly)
+library(DT)
+#import Urbana Rental Inspections data
+rentalInspections <- read_csv("https://uofi.box.com/shared/static/b6u4it6rjdjva4ouk4fps7h7ias0u4eu.csv")
+rentalInspections <- drop_na(rentalInspections)
+
+#Splits "Mappable Address" column in rentalInspections into "streetAddress", "Latitude" and "Longitude" columns 
+setnames(rentalInspections, old = "Mappable Address", new = "mapAddress")
+rentalInspections <- separate(data = rentalInspections, col = 'mapAddress', into = c("streetAddress","Lat/Long"), sep = "\\(")
+rentalInspections <- separate(data = rentalInspections, col = 'Lat/Long', into = c("Latitude", "Longitude"), sep = ",")
+rentalInspections <- separate(data = rentalInspections, col = 'Longitude', into = c("Longitude","extra"), sep = "\\)")
+rentalInspections <- rentalInspections %>% select(-one_of('extra'))
+
+#prepares latitude and longitude to be swapped
+rentalInspections$Longitude <- as.numeric(rentalInspections$Longitude)
+rentalInspections$Latitude <- as.numeric(rentalInspections$Latitude)
+rentalInspections$actualLat <- NA
+rentalInspections$actualLong <- NA
+
+#swaps latitude and longitude where data was entered incorrectly
+rentalInspections$actualLat <- ifelse(rentalInspections$Latitude > 0, rentalInspections$Latitude, rentalInspections$Longitude)
+rentalInspections$actualLong <- ifelse(rentalInspections$Longitude < 0, rentalInspections$Longitude, rentalInspections$Latitude)
+rentalInspections <- rentalInspections %>% select(-one_of('Longitude'))
+rentalInspections <- rentalInspections %>% select(-one_of('Latitude'))
+setnames(rentalInspections, old = c("actualLat","actualLong"), new = c("Latitude","Longitude"))
+
+#sets date columns to date format instead of character
+rentalInspections$`Inspection Date` <- as.Date(rentalInspections$`Inspection Date`, format = "%m/%d/%Y")
+rentalInspections$`Expiration Date` <- as.Date(rentalInspections$`Expiration Date`, format = "%m/%d/%Y")
+
+#Assigns token for Mapbox API
+token <- "pk.eyJ1IjoiYXdpc293YXR5IiwiYSI6ImNrc3UwaXZibzB6YncyeG1xaTVtYWd0M3AifQ.rYaXwdbMHY4Dvq-i3MwLSw"
+
+
+# Define UI for application
+ui <- fluidPage(
+
+    # Application title
+    titlePanel("Urbana Rental Inspections Data"),
+
+    # Sidebar inputs for filters/options 
+    sidebarLayout(
+        sidebarPanel(
+            
+            #Add checkboxGroupInput to filter by grade
+            checkboxGroupInput("grade", "Grade:",
+                             c("Class A",
+                               "Class B",
+                               "Class C",
+                               "Class D",
+                               "Class F",
+                               "Class N"), selected = c("Class A","Class B","Class C","Class D","Class F","Class N")),
+          
+          
+
+            
+            #Add checkboxGroupInput to filter by License Status
+            checkboxGroupInput("licenseStatus", "License Status:",
+                               c("Contract Sale",
+                                 "Expired",
+                                 "Fee Exempt Registration",
+                                 "Issued",
+                                 "Temporarily Not a Rental",
+                                 "Under Review"), selected = c("Contract Sale","Expired","Fee Exempt Registration","Issued","Temporarily Not a Rental","Under Review")),
+            
+            
+            #Add Date Range Input for Inspection Date
+            dateRangeInput("inspectionDateRange", "Inspection Date Range:",
+                           start = "2007-03-20",
+                           end = "2019-05-23"
+                           ),
+            
+            #Add Date Range Input for Expiration Date
+            dateRangeInput("expirationDateRange", "Expiration Date Range:",
+                           start = "2017-10-14",
+                           end = "2020-10-14"),
+            
+            #Add Select Input for changing style of map
+            selectInput("mapStyle", "Map Style:",
+                        c("Basic" = "basic",
+                          "Streets" = "streets",
+                          "Outdoors" = "outdoors",
+                          "Light" = "light",
+                          "Dark" = "dark",
+                          "Satellite" = "satellite"))
+            
+            ),
+            
+            
+
+        # Show a plot of the generated map points
+        mainPanel(
+           plotlyOutput("Map"),
+           fluidRow(
+             column(
+               DT::dataTableOutput(outputId = "filteredDataTable"), width = 10)
+           )
+        )
+    )
+)
+
+# Define server logic
+server <- function(input, output) {
+        
+    #Makes checkbox and dateRange inputs work
+    filteredData <- reactive({
+        m <- rentalInspections[rentalInspections$Grade %in% input$grade, ]
+        m2 <- m[m$`License Status` %in% input$licenseStatus, ]
+        m3 <- m2[m2$`Inspection Date` >= input$inspectionDateRange[1] & m2$`Inspection Date` <= input$inspectionDateRange[2], ]
+        m4 <- m3[m3$`Expiration Date` >= input$expirationDateRange[1] & m3$`Expiration Date` <= input$expirationDateRange[2], ]
+        m4
+    })
+  
+  
+    #Creates map output
+    output$Map <- renderPlotly({
+        plot_ly(
+          lon = filteredData()$Longitude,
+          lat = filteredData()$Latitude,
+          marker = list(color = "blue"),
+          type = 'scattermapbox',
+          hovertext = filteredData()$`Property Address`
+          ) %>%
+        layout(
+            mapbox = list(
+              style = input$mapStyle,
+              accesstoken = token,
+              zoom = 11.5,
+              center = list(lon = -88.2, lat = 40.1)))
+    })
+    
+    output$filteredDataTable <- renderDataTable({filteredData()},
+                                                options = list(scrollX = TRUE))
+}
+
+# Run the application 
+shinyApp(ui = ui, server = server)
+
+```
