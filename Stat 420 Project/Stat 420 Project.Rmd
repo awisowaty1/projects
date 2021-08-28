@@ -1,0 +1,329 @@
+---
+title: "Stat 420 Project"
+subtitle: "Statistical Analysis of the Life Expectancy Dataset"
+output:
+  word_document: default
+  pdf_document: default
+  html_document:
+    theme: readable
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+library(dplyr)
+library(knitr)
+library(readr)
+library(MASS)
+library(ggplot2)
+library(ggmap)
+library(rpart)
+library(rpart.plot)
+library(leaps)
+library(tree)
+library(corrplot)
+library(lmtest)
+library(car)
+```
+
+    
+## Introduction
+
+**An Examination of Life Expectancy Across Various Countries**
+The data is a combination of many different data sets from the World Health Organization website. The combined data allows us to get a better idea of the economic and health situations within each country. The data contains information about different countries’ average life expectancy along with other macroeconomic predictors such as GDP, adult mortality rate, Income composition of resources, etc. This is concerning because countries experience rapid economic growth along with technological advances, but does any of this lead towards increasing the lifespan of humans? 
+
+```{r}
+life_expectancy = read.csv("Life Expectancy Data.csv")
+life_expectancy = filter(life_expectancy, Year == 2014)
+life_expectancy = na.omit(life_expectancy)
+
+```
+
+```{r}
+#Plotting helper functions and assumption testing for later
+loocv_rmse <- function(model) {
+  sqrt(mean(resid(model) / (1 - hatvalues(model))) ^ 2)
+}
+
+plot_fitted_resid <- function(model, title, pointcol = "dodgerblue", linecol = "darkorange") {
+  plot(fitted(model), resid(model), col = pointcol, pch = 19, cex = 0.75, xlab = "Fitted", ylab = "Residuals", main = title)
+  abline(h = 0, col = linecol, lwd = 2)
+}
+
+plot_qq <- function(model, pointcol = "dodgerblue", linecol = "darkorange") {
+  qqnorm(resid(model), col = pointcol, pch = 19, cex = 0.75)
+  qqline(resid(mode), col = linecol, lwd = 2)
+}
+
+```
+
+#### Dataset Explanation
+The dataset *life_expectancy* was condensed down to 131 observations. The goal of this study is to predict lifetime expectancy using information on the following:
+
+1. Country: Name of country
+2. Year: Year in which data for that country was taken
+3. Status: Dummy variable indicating 'developed' or 'undeveloped'
+4. Life.expectancy: Number of years a person lives on average in specified country
+5. Adult.mortality: Probability of dying between ages 15-60 per 1000 people
+6. infant.deaths: Number of infant deaths per 1000 people
+7. Alcohol: Recorded (15+) consumption of alcohol per capita
+8. percentage.expenditure: Expenditure on health care as a % of GDP
+9. Hepatitis.B: Percentage of HepB immunization among 1-year olds
+10. Measles: Number of reported measles cases per 1000 people
+11. BMI: Average Body Mass Index of entire population
+12. under-five-deaths: Number of deaths under the age of 5 per 1000 people
+13. Polio: Percentage of Polio (Pol3) immunizations among 1-year olds
+14. Total.Expenditure: General government expenditure on healthcare as a percentage of total government expenditure
+15. Diptheria: Diptheria immunization coverage percentage among 1-year olds
+16. HIV/AIDS: Percentage of deaths per 1000 live births from 0-4 years old
+17. GDP: Gross Domestic Product per capita in USD
+18. Population: Size of the country
+19. thinness.1.19.years: Prevalence of thinness among children and adolescents from age 10-19 (%)
+20. thinness.5.9.years: Prevalence of thinness among children age 5-9 (%)
+21. Income.composition.of.resources: Human Development Index in terms of income composition of resources (index ranging from 0 to 1)
+22. Schooling: Number of years of schooling on average
+
+## Methods
+
+### Life Expectancy Data Analysis
+
+```{r}
+avgLifetime = mean(life_expectancy$Life.expectancy)
+max(life_expectancy$Life.expectancy)
+avgLifetime
+```
+The average lifetime across all 131 countries is *70* and a half years, while Portugal has the highest life expectancy with *89* years.
+
+
+#### Scatterplots
+
+  *Adult Mortality*
+  
+```{r}
+adultMortalityData = as.data.frame(cbind(life_expectancy$Adult.Mortality, life_expectancy$Life.expectancy))
+adultMortalityData = adultMortalityData[complete.cases(adultMortalityData),]
+colnames(adultMortalityData) = c("Adult Mortality", "Life Expectancy")
+pred.adultMortality <- predict(lm(life_expectancy$Life.expectancy ~ life_expectancy$Adult.Mortality, data = adultMortalityData))
+
+adultPlot <- ggplot(adultMortalityData, aes(x = life_expectancy$Adult.Mortality, y = life_expectancy$Life.expectancy))
+adultPlot + geom_point(col = "dodgerblue", ) + geom_line(aes(y = pred.adultMortality, col = "darkorange")) + geom_smooth() + ggtitle("Life Expectancy vs. Adult Mortality") + xlab("Adult Mortality") + ylab("Life Expectancy") +  theme(legend.position = "none")
+```
+
+This plot shows the effect of adult mortality on life expectancy. There is a clear negative relationship between the two variables and variance increases with Adult Mortality levels above 400.
+   
+   
+  *Total Expenditure*
+```{r}
+expendData = as.data.frame(cbind(life_expectancy$Total.expenditure, life_expectancy$Life.expectancy))
+expendData = expendData[complete.cases(expendData),]
+colnames(expendData) = c("Total Expenditure", "Life Expectancy")
+pred.expend <- predict(lm(life_expectancy$Life.expectancy ~ life_expectancy$Total.expenditure, data = expendData))
+
+expendPlot <- ggplot(expendData, aes(x = life_expectancy$Total.expenditure, y = life_expectancy$Life.expectancy))
+expendPlot + geom_point(col = "dodgerblue", ) + geom_line(aes(y = pred.expend, col = "darkorange")) + geom_smooth() + ggtitle("Life Expectancy vs. Total Expenditure") + xlab("Total Expenditure") + ylab("Life Expectancy") +  theme(legend.position = "none")
+```  
+
+This plot shows the effect of a country's total expenditure on life expectancy. There appears to be a slightly positive relationship between the two variables with variance increasing near the ends of the data.
+  
+  
+  
+  *HIV/AIDS*
+```{r}
+HIVData = as.data.frame(cbind(life_expectancy$HIV.AIDS, life_expectancy$Life.expectancy))
+HIVData = HIVData[complete.cases(HIVData),]
+colnames(HIVData) = c("HIV/AIDS", "Life Expectancy")
+pred.HIV <- predict(lm(life_expectancy$Life.expectancy ~ life_expectancy$HIV.AIDS, data = HIVData))
+HIVPlot <- ggplot(HIVData, aes(x = life_expectancy$HIV.AIDS, y = life_expectancy$Life.expectancy))
+HIVPlot + geom_point(col = "dodgerblue", ) + geom_line(aes(y = pred.HIV, col = "darkorange")) + geom_smooth() + ggtitle("Life Expectancy vs. HIV/AIDS Prevalence") + xlab("HIV/AIDS") + ylab("Life Expectancy") +  theme(legend.position = "none")
+```  
+
+This plot shows the effect of the prevalence of HIV/AIDS within a country on life expectancy. There appears to be a negative relationship between the two variables with variance increasing as HIV/AIDS increases.
+  
+  
+  *Income Composition of Resources*
+```{r}
+incomeData = as.data.frame(cbind(life_expectancy$Income.composition.of.resources, life_expectancy$Life.expectancy))
+incomeData = incomeData[complete.cases(incomeData),]
+colnames(incomeData) = c("Income Comp", "Life Expectancy")
+pred.income <- predict(lm(life_expectancy$Life.expectancy ~ life_expectancy$Income.composition.of.resources, data = incomeData))
+
+incomePlot <- ggplot(incomeData, aes(x = life_expectancy$Income.composition.of.resources, y = life_expectancy$Life.expectancy))
+incomePlot + geom_point(col = "dodgerblue", ) + geom_line(aes(y = pred.income, col = "darkorange")) + geom_smooth() + ggtitle("Life Expectancy vs. Income Composition of Resources") + xlab("Income Composition of Resources") + ylab("Life Expectancy") +  theme(legend.position = "none")
+```
+
+This plot shows the relationship between income composition of resources and life expectancy. There is clearly a very positive relationship with variance remaining constant.
+
+Now we can look at the correlation matrix and see if we have any evidence of multicollinearity.
+
+```{r}
+corrplot(cor(life_expectancy[sapply(life_expectancy, is.numeric)]), title = "Correlation Matrix", tl.cex = 0.5, tl.pos = "lt", tl.col = "dodgerblue")
+```
+
+### Model Selection
+
+1. Full Model
+    
+```{r}
+full_Model = lm(Life.expectancy~. - Country, data = life_expectancy)
+summary(full_Model)
+```
+
+2. Reduced additive model with significant predictors
+
+```{r}
+reduced_model = lm(Life.expectancy ~ Adult.Mortality + Total.expenditure + HIV.AIDS + Income.composition.of.resources, life_expectancy)
+summary(reduced_model)
+```
+
+3. Full Interaction Model
+
+```{r}
+full_interaction_model = lm(Life.expectancy ~ Adult.Mortality*Total.expenditure*HIV.AIDS*Income.composition.of.resources, life_expectancy)
+summary(full_interaction_model)
+```
+4. Reduced Interaction Model
+
+```{r}
+#Based on significance we can drop all interactions except Adult.Mortality:Total.expenditure
+
+reduced_interaction_model = lm(Life.expectancy ~ Total.expenditure + HIV.AIDS + Income.composition.of.resources + Adult.Mortality:Total.expenditure, life_expectancy)
+
+#We can also drop Adult.Mortality based on its insignificant t value
+
+summary(reduced_interaction_model)
+```
+
+### Model Assumptions
+
+Now, between the reduced_model and the full_interaction_model 
+
+1. Linearity and Constant Variance
+```{r}
+par(mfrow=c(1,3))
+plot_fitted_resid(reduced_model, title = "Residuals of Reduced Model")
+plot_fitted_resid(full_interaction_model, title = "Residuals of Full Interaction Model")
+plot_fitted_resid(reduced_interaction_model, title = "Residuals of Reduced Interaction Model")
+
+bptest(reduced_model)
+bptest(full_interaction_model)
+bptest(reduced_interaction_model)
+```
+
+We can observe that the residuals are closely related to 0 with some outliers, however the Breusch-Pagan test confirms our residuals are homoskedastic in nature. The best model, is the reduced interaction model in terms of homoskedasticity.
+
+
+2. Normality of Errors
+
+```{r}
+par(mfrow=c(3,2))
+hist(resid(reduced_model), xlab = "Residuals", main = "Histogram of Residuals - Reduced Model", col = "darkorange", border = "dodgerblue", breaks = 20)
+
+
+hist(resid(full_interaction_model), xlab = "Residuals", main = "Histogram of Residuals - Full Interaction Model", col = "darkorange", border = "dodgerblue", breaks = 20)
+
+
+hist(resid(reduced_interaction_model), xlab = "Residuals", main = "Histogram of Residuals - Reduced Interaction Model", col = "darkorange", border = "dodgerblue", breaks = 20)
+
+shapiro.test(resid(reduced_model))
+shapiro.test(resid(full_interaction_model))
+shapiro.test(resid(reduced_interaction_model))
+
+```
+
+
+3. Outliers/Influential Points
+```{r}
+#Outliers
+length(rstandard(reduced_model)[abs(rstandard(reduced_model)) > 2])
+length(rstandard(full_interaction_model)[abs(rstandard(full_interaction_model)) > 2])
+length(rstandard(reduced_interaction_model)[abs(rstandard(reduced_interaction_model)) > 2])
+
+#Influential Points
+length(cooks.distance(reduced_model)[cooks.distance(reduced_model) > 4 / length(cooks.distance(reduced_model))])
+length(cooks.distance(full_interaction_model)[cooks.distance(full_interaction_model) > 4 / length(cooks.distance(full_interaction_model))])
+length(cooks.distance(reduced_interaction_model)[cooks.distance(reduced_interaction_model) > 4 / length(cooks.distance(reduced_interaction_model))])
+```
+
+As expected, there were outliers and influential points present. This is very common in large, aggregated data sets. Fortunately, in this case the points are not too influential on the results of our regression.
+
+### Model Evaluations
+```{r}
+summary(reduced_model)$adj.r.squared
+summary(full_interaction_model)$adj.r.squared
+summary(reduced_interaction_model)$adj.r.squared
+```
+
+```{r}
+loocv_rmse(reduced_model)
+loocv_rmse(full_interaction_model)
+loocv_rmse(reduced_interaction_model)
+```
+
+```{r}
+# AIC
+extractAIC(reduced_model)
+extractAIC(full_interaction_model)
+extractAIC(reduced_interaction_model)
+
+#BIC
+extractAIC(reduced_model, k = log(nrow(life_expectancy)))
+extractAIC(full_interaction_model, k = log(nrow(life_expectancy)))
+extractAIC(reduced_interaction_model, k = log(nrow(life_expectancy)))
+
+```
+
+## Results
+We ended up choosing the 'Full Interaction Model' as our best model, mainly because of the values we received for the Adjusted R Squared. Since we know it passed the assumptions, we can take a look at how it performed individually.
+
+```{r}
+plot(full_interaction_model, main = "Full Interaction Model")
+
+#Analysis
+summary(full_interaction_model)$adj.r.squared
+loocv_rmse(full_interaction_model)
+#VIF
+sum(vif(full_interaction_model) > 5) / length(coef(full_interaction_model))
+#AIC
+extractAIC(full_interaction_model)
+#BIC
+extractAIC(full_interaction_model, k = log(nrow(life_expectancy)))
+```
+
+This model seems to outperform all the other models generated and examined previously.
+
+
+## Discussion
+
+*Predictor Significance*
+```{r}
+sum(summary(full_interaction_model)$coefficients[ ,4] < 0.05) / length(coef(full_interaction_model))
+summary(full_interaction_model)$coefficients[summary(full_interaction_model)$coefficients[ ,4] < 0.05,]
+```
+
+$\textbf{Significant R^2 and F-statistic}$
+The final model that we chose *full_interaction_model* achieved an R^2 value of .904 which means that we were able to explain 90.4% of the variation in our depedent variable, life expectancy. This model also had a statistically significant F-stat of 72.2 on 15 and 115 degrees of freedom which suggests that the model is valid.
+
+$\textbf{anova test}$
+```{r}
+anovaTest = anova(full_interaction_model, reduced_interaction_model, test = "F")
+anovaTest$`Pr(>F)`[2]
+```
+
+We tested the full interaction model against the reduced interaction model using an anova test and found that the p-value was .0128. This suggests we should reject the null at the 5% level and conclude that the full interaction model should be used at the 5% significance level. We also tested the full interaction model against the additive reduced model and found that there was little evidence to suggest that the terms in the additive model were significant enough.
+```{r}
+anovaTest2 = anova(full_interaction_model, reduced_model, test = "F")
+anovaTest2$`Pr(>F)`[2]
+```
+
+$\textbf{Testing Assumptions}$
+The first assumption that we tested was constant variance. We created residual plots and ran Breusch Pagan tests for the reduced model, full interaction model and reduced interaction model. The residual plots seemed to indicate a few outliers, but the BP test confirmed that each model's residuals were homoskedastic.
+
+The next assumption that we tested was normality of errors. We created a histogram for the reduced model, full interaction model and reduced interaction model. The histograms weren't perfect, but the distributions appeared to be relatively normal. We then conducted a Shapiro-Wilk test on each of the models which confirmed that all 3 had normally distributed errors. 
+
+
+##Appendix
+After omitting empty entries, we were left with still enough data to generate a report on. However, this resulted in not being able to use the USA as a data point. Unfortunately, factors such as GDP were left blank so we had to choose between having the USA as a data point or GDP and we figured GDP would be a better metric than one more observation. In the end, GDP ended up not being significant enough to make it past the first round of tests to determine the models. 
+
